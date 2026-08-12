@@ -15,6 +15,10 @@ compile_commands.json
 # Release
 release/
 
+# Downloaded CI firmware artifacts (unzipped dirs and bundles)
+firmware-*/
+firmware-*.zip
+
 # Site assets staged at deploy time (by CI) or by `just site` (locally)
 site/branding/
 site/flash/firmware/
@@ -50,6 +54,9 @@ main/core/test/libwally.a
 .vscode/
 .cache/
 .cm/logs/
+
+# macOS
+.DS_Store
 
 # Python
 __pycache__/
