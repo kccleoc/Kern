@@ -8,9 +8,6 @@
 
 #include <lvgl.h>
 #include <string.h>
-#include <wally_bip32.h>
-#include <wally_bip39.h>
-#include <wally_core.h>
 
 #define PREVIEW_MAX_LEN 48
 
@@ -20,9 +17,8 @@ static void (*back_callback)(void) = NULL;
 static void (*rescan_callback)(void) = NULL;
 static passphrase_verify_success_cb_t success_callback = NULL;
 
-/* Compute the master fingerprint a passphrase would produce, following the
- * same derivation used by wallet_settings' passphrase fingerprint display:
- * seed512(mnemonic, passphrase) -> master key -> fingerprint -> hex.
+/* Compute the master fingerprint a passphrase would produce via the core key
+ * module (seed512(mnemonic, passphrase) -> master key -> fingerprint).
  * Returns false on derivation failure. */
 static bool
 derive_passphrase_fingerprint(const char *passphrase,
@@ -30,33 +26,8 @@ derive_passphrase_fingerprint(const char *passphrase,
   char *mnemonic = NULL;
   if (!key_get_mnemonic(&mnemonic))
     return false;
-
-  unsigned char seed[BIP39_SEED_LEN_512];
-  struct ext_key *master_key = NULL;
-  bool ok = false;
-
-  if (bip39_mnemonic_to_seed512(mnemonic, passphrase, seed, sizeof(seed)) ==
-          WALLY_OK &&
-      bip32_key_from_seed_alloc(seed, sizeof(seed), BIP32_VER_MAIN_PRIVATE, 0,
-                                &master_key) == WALLY_OK) {
-    unsigned char fingerprint[BIP32_KEY_FINGERPRINT_LEN];
-    bip32_key_get_fingerprint(master_key, fingerprint,
-                              BIP32_KEY_FINGERPRINT_LEN);
-
-    char *hex = NULL;
-    if (wally_hex_from_bytes(fingerprint, BIP32_KEY_FINGERPRINT_LEN, &hex) ==
-        WALLY_OK) {
-      strncpy(fp_hex, hex, BIP32_KEY_FINGERPRINT_LEN * 2);
-      fp_hex[BIP32_KEY_FINGERPRINT_LEN * 2] = '\0';
-      wally_free_string(hex);
-      ok = true;
-    }
-    secure_memzero(fingerprint, sizeof(fingerprint));
-  }
-
-  secure_memzero(seed, sizeof(seed));
-  if (master_key)
-    bip32_key_free(master_key);
+  bool ok =
+      key_mnemonic_passphrase_fingerprint_hex(mnemonic, passphrase, fp_hex);
   SECURE_FREE_STRING(mnemonic);
   return ok;
 }
@@ -138,7 +109,8 @@ void passphrase_verify_page_create(lv_obj_t *parent, const char *passphrase,
 
   /* Fingerprint transition: [base] -> [passphrase]. */
   char base_fp[BIP32_KEY_FINGERPRINT_LEN * 2 + 1] = "????????";
-  key_get_fingerprint_hex(base_fp);
+  if (!key_get_fingerprint_hex(base_fp))
+    strcpy(base_fp, "--------");
 
   char derived_fp[BIP32_KEY_FINGERPRINT_LEN * 2 + 1] = "????????";
   if (!derive_passphrase_fingerprint(passphrase, derived_fp))
