@@ -49,6 +49,7 @@ main/core/test/test_estimated_entropy
 main/core/test/test_pin_attempt
 main/core/test/combined.o
 main/core/test/libwally.a
+*.dSYM/
 
 # IDE / tools
 .vscode/
