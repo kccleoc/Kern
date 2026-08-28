@@ -1,6 +1,6 @@
 /*
  * KEF Decrypt Page
- * Key entry + decryption for KEF-encrypted data.
+ * Key entry (typed or scanned from QR) + decryption for KEF-encrypted data.
  * Follows the same pattern as passphrase.c.
  *
  * Decryption (PBKDF2 with 100k+ iterations) runs on a separate FreeRTOS
@@ -10,10 +10,13 @@
 
 #include "kef_decrypt_page.h"
 #include "../../core/kef.h"
+#include "../../qr/scanner.h"
 #include "../../ui/dialog.h"
 #include "../../ui/input_helpers.h"
+#include "../../ui/settings_row.h"
 #include "../../ui/theme_widgets.h"
 #include "../../utils/secure_mem.h"
+#include "kef_key_verify.h"
 #include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/idf_additions.h>
@@ -44,6 +47,10 @@ static kef_error_t decrypt_result = KEF_OK;
 static TaskHandle_t decrypt_task_handle = NULL;
 
 static void show_input(void) {
+  /* Re-shows the page too: the scanner and verify flows hide it while the
+   * key entry screen stays alive underneath, and the retry path after a
+   * failed decrypt must land back on a visible page either way. */
+  kef_decrypt_page_show();
   ui_text_input_show(&text_input);
   if (progress_dialog) {
     lv_obj_del(progress_dialog);
@@ -114,23 +121,20 @@ static void poll_timer_cb(lv_timer_t *timer) {
   }
 }
 
-static void keyboard_ready_cb(lv_event_t *e) {
-  (void)e;
-  const char *text = lv_textarea_get_text(text_input.textarea);
-  if (!text || text[0] == '\0')
-    return;
-
-  /* Copy key before clearing textarea */
-  key_copy_len = strlen(text);
-  key_copy = malloc(key_copy_len);
-  if (!key_copy)
-    return;
-  memcpy(key_copy, text, key_copy_len);
+/* Copy key into key_copy and launch decryption on CPU 1 to keep LVGL
+ * (CPU 0) responsive. Shows its own error dialogs on failure. */
+static bool start_decrypt(const char *key, size_t len) {
+  key_copy = malloc(len);
+  if (!key_copy) {
+    dialog_show_error_timeout("Out of memory", NULL, 0);
+    return false;
+  }
+  memcpy(key_copy, key, len);
+  key_copy_len = len;
 
   lv_textarea_set_text(text_input.textarea, "");
   show_loading();
 
-  /* Launch decryption on CPU 1 to keep LVGL (CPU 0) responsive */
   decrypt_done = false;
   if (xTaskCreatePinnedToCore(decrypt_task, "kef_dec", DECRYPT_TASK_STACK_SIZE,
                               NULL, 5, &decrypt_task_handle, 1) != pdPASS) {
@@ -139,11 +143,100 @@ static void keyboard_ready_cb(lv_event_t *e) {
     key_copy_len = 0;
     show_input();
     dialog_show_error_timeout("Task creation failed", NULL, 0);
-    return;
+    return false;
   }
 
   /* Poll every 100ms for task completion */
   poll_timer = lv_timer_create(poll_timer_cb, 100, NULL);
+  return true;
+}
+
+static void keyboard_ready_cb(lv_event_t *e) {
+  (void)e;
+  const char *text = lv_textarea_get_text(text_input.textarea);
+  if (!text || text[0] == '\0')
+    return;
+
+  start_decrypt(text, strlen(text));
+}
+
+/* ---------- Scan key path ---------- */
+
+/* The page stays alive (hidden) under the scanner and the verify page, so
+ * the envelope survives Cancel and Back. */
+
+static void scan_key_btn_cb(lv_event_t *e);
+static void scan_key_return_cb(void);
+static void verify_back_cb(void);
+static void verify_rescan_cb(void);
+static void verify_accept_cb(const char *key);
+
+static void scan_key_btn_cb(lv_event_t *e) {
+  (void)e;
+  kef_decrypt_page_hide();
+  qr_scanner_page_create(lv_screen_active(), scan_key_return_cb);
+  qr_scanner_page_show();
+}
+
+/* Scanner callback — fires on both completion and cancel. */
+static void scan_key_return_cb(void) {
+  size_t len = 0;
+  char *content = qr_scanner_get_completed_content_with_len(&len);
+  /* Payload must be read before destroying the scanner: the parser buffers
+   * are freed on destroy. */
+  qr_scanner_page_hide();
+  qr_scanner_page_destroy();
+
+  if (!content) {
+    kef_decrypt_page_show();
+    return;
+  }
+
+  /* Copy into a NUL-terminated, length-bounded buffer before freeing the
+   * scanner's allocation. */
+  char key[KEF_KEY_MAX_LEN + 1];
+  size_t copy_len = len < KEF_KEY_MAX_LEN ? len : KEF_KEY_MAX_LEN;
+  memcpy(key, content, copy_len);
+  key[copy_len] = '\0';
+  SECURE_FREE_STRING(content);
+
+  if (key[0] == '\0') {
+    secure_memzero(key, sizeof(key));
+    kef_decrypt_page_show();
+    return;
+  }
+  if (len > KEF_KEY_MAX_LEN) {
+    dialog_show_error_timeout("Key too long", NULL, 0);
+    secure_memzero(key, sizeof(key));
+    kef_decrypt_page_show();
+    return;
+  }
+
+  char *copy = strdup(key);
+  secure_memzero(key, sizeof(key));
+  if (!copy) {
+    dialog_show_error_timeout("Out of memory", NULL, 0);
+    kef_decrypt_page_show();
+    return;
+  }
+
+  kef_key_verify_page_create(copy, true, verify_back_cb, verify_rescan_cb,
+                             verify_accept_cb);
+  kef_key_verify_page_show();
+}
+
+/* The verify page has already been destroyed by the time these run. */
+static void verify_back_cb(void) { kef_decrypt_page_show(); }
+
+static void verify_rescan_cb(void) {
+  kef_decrypt_page_hide();
+  qr_scanner_page_create(lv_screen_active(), scan_key_return_cb);
+  qr_scanner_page_show();
+}
+
+static void verify_accept_cb(const char *key) {
+  if (!start_decrypt(key, strlen(key)))
+    kef_decrypt_page_show();
 }
 
 static void back_btn_cb(lv_event_t *e) {
@@ -196,6 +289,25 @@ void kef_decrypt_page_create(lv_obj_t *parent, void (*return_cb)(void),
 
   /* Text input (textarea + eye toggle + keyboard) */
   ui_text_input_create(&text_input, kef_screen, "key", true, keyboard_ready_cb);
+
+  /* Scan row between the textarea and the keyboard, mirroring the
+   * passphrase page. */
+  int32_t ta_bottom = lv_obj_get_y(text_input.textarea) +
+                      lv_obj_get_height(text_input.textarea);
+  lv_obj_t *rows = theme_create_flex_column(kef_screen);
+  lv_obj_set_width(rows, LV_PCT(90));
+  lv_obj_set_style_pad_gap(rows, theme_small_padding(), 0);
+  lv_obj_align(rows, LV_ALIGN_TOP_MID, 0, ta_bottom + theme_small_padding());
+  settings_row_action(rows, "Scan Key", scan_key_btn_cb);
+
+  /* Shrink the bottom-anchored keyboard to clear the row. */
+  lv_obj_update_layout(rows);
+  int32_t rows_bottom =
+      lv_obj_get_y(rows) + lv_obj_get_height(rows) + theme_default_padding();
+  int32_t kb_h = LV_VER_RES - rows_bottom;
+  if (kb_h < theme_min_touch_size())
+    kb_h = theme_min_touch_size();
+  lv_obj_set_height(text_input.keyboard, kb_h);
 
   progress_dialog = NULL;
 }

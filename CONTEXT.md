@@ -48,8 +48,9 @@ for confirmation, or scanned once from a QR code and confirmed on the
 Verify Key screen. Not wallet-derived, so it has no fingerprint transition.
 
 **Verify Key screen**:
-The confirmation step for a scanned KEF encryption key. Shows the key
-masked with an eye toggle and Confirm / Back / Rescan actions.
+The confirmation step for a scanned KEF encryption key, both when
+encrypting a backup and when decrypting one. Shows the key masked with an
+eye toggle and Confirm / Back / Rescan actions.
 
 **Derivation**:
 Turning the mnemonic (and optional passphrase) into the wallet's master key

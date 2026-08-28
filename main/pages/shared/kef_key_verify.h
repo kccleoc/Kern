@@ -13,6 +13,10 @@
 #include <lvgl.h>
 #include <stdbool.h>
 
+/* Upper bound for a KEF key supplied by scan; shared by the encrypt and
+ * decrypt pages. */
+#define KEF_KEY_MAX_LEN 256
+
 /**
  * Success callback — the key pointer is only valid during the call; copy it.
  */

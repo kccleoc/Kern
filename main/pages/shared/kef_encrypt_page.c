@@ -30,8 +30,6 @@
 
 #define KEF_ITERATIONS 100000
 #define ENCRYPT_TASK_STACK_SIZE 8192
-/* Upper bound for a key scanned from QR; matches the passphrase limit. */
-#define KEF_KEY_MAX_LEN 256
 
 static lv_obj_t *overlay_screen = NULL;
 static lv_obj_t *overlay_title = NULL;
