@@ -2,8 +2,9 @@
  * KEF Encrypt Page
  *
  * Shared encryption flow: fingerprint/custom ID prompt, two-step key
- * confirmation, and background encryption on CPU 1.  On success the
- * caller-supplied callback receives the encrypted KEF envelope.
+ * confirmation (or a key scanned from QR and confirmed on its own verify
+ * page), and background encryption on CPU 1.  On success the caller-supplied
+ * callback receives the encrypted KEF envelope.
  *
  * Mirrors the kef_decrypt_page pattern.
  */
@@ -11,10 +12,13 @@
 #include "kef_encrypt_page.h"
 #include "../../core/kef.h"
 #include "../../core/key.h"
+#include "../../qr/scanner.h"
 #include "../../ui/dialog.h"
 #include "../../ui/input_helpers.h"
+#include "../../ui/settings_row.h"
 #include "../../ui/theme_widgets.h"
 #include "../../utils/secure_mem.h"
+#include "kef_key_verify.h"
 
 #include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
@@ -26,6 +30,8 @@
 
 #define KEF_ITERATIONS 100000
 #define ENCRYPT_TASK_STACK_SIZE 8192
+/* Upper bound for a key scanned from QR; matches the passphrase limit. */
+#define KEF_KEY_MAX_LEN 256
 
 static lv_obj_t *overlay_screen = NULL;
 static lv_obj_t *overlay_title = NULL;
@@ -62,6 +68,11 @@ static size_t confirm_key_len = 0;
 /* ---------- Forward declarations ---------- */
 
 static void show_password_input(void);
+static void scan_key_btn_cb(lv_event_t *e);
+static void scan_key_return_cb(void);
+static void verify_back_cb(void);
+static void verify_rescan_cb(void);
+static void verify_accept_cb(const char *key);
 
 /* ---------- Key strength indicator ---------- */
 
@@ -208,22 +219,32 @@ static void create_overlay(const char *title, const char *placeholder,
     strength_label = lv_label_create(overlay_screen);
     lv_label_set_text(strength_label, "");
     lv_obj_set_style_text_font(strength_label, theme_font_small(), 0);
-    lv_obj_align_to(strength_label, text_input.textarea,
-                    LV_ALIGN_OUT_BOTTOM_MID, 0, 5);
     lv_obj_add_event_cb(text_input.keyboard, key_changed_cb,
                         LV_EVENT_VALUE_CHANGED, NULL);
 
-    // Shrink the bottom-anchored keyboard if the textarea-keyboard gap can't
-    // fit the strength label.
-    lv_obj_update_layout(lv_screen_active());
-    lv_area_t ta_area, kb_area;
-    lv_obj_get_coords(text_input.textarea, &ta_area);
-    lv_obj_get_coords(text_input.keyboard, &kb_area);
-    int32_t needed = lv_font_get_line_height(theme_font_small()) + 2 * 5;
-    int32_t deficit = needed - (kb_area.y1 - ta_area.y2 - 1);
-    if (deficit > 0)
-      lv_obj_set_height(text_input.keyboard,
-                        lv_area_get_height(&kb_area) - deficit);
+    // Scan row between the textarea and the keyboard, mirroring the
+    // passphrase page.
+    int32_t ta_bottom = lv_obj_get_y(text_input.textarea) +
+                        lv_obj_get_height(text_input.textarea);
+    lv_obj_t *rows = theme_create_flex_column(overlay_screen);
+    lv_obj_set_width(rows, LV_PCT(90));
+    lv_obj_set_style_pad_gap(rows, theme_small_padding(), 0);
+    lv_obj_align(rows, LV_ALIGN_TOP_MID, 0, ta_bottom + theme_small_padding());
+    settings_row_action(rows, "Scan Key", scan_key_btn_cb);
+
+    // Strength meter under the scan row.
+    lv_obj_align_to(strength_label, rows, LV_ALIGN_OUT_BOTTOM_MID, 0, 5);
+
+    // Shrink the bottom-anchored keyboard to clear the row and the strength
+    // label.
+    lv_obj_update_layout(rows);
+    int32_t rows_bottom =
+        lv_obj_get_y(rows) + lv_obj_get_height(rows) + theme_default_padding();
+    int32_t kb_h = LV_VER_RES - rows_bottom -
+                   (lv_font_get_line_height(theme_font_small()) + 2 * 5);
+    if (kb_h < theme_min_touch_size())
+      kb_h = theme_min_touch_size();
+    lv_obj_set_height(text_input.keyboard, kb_h);
   }
 }
 
@@ -289,6 +310,35 @@ static void encrypt_poll_timer_cb(lv_timer_t *timer) {
 
 /* ---------- Password input with confirmation ---------- */
 
+/* Launch the encryption task for the key in encrypt_key_copy. Hides the text
+ * input, shows the progress dialog, and returns true on success. On failure
+ * it cleans up and restores the text input; the caller may need to re-show
+ * its own page. */
+static bool start_encryption_task(void) {
+  /* Show loading state */
+  ui_text_input_hide(&text_input);
+  progress_dialog =
+      dialog_show_progress("KEF", "Encrypting...", DIALOG_STYLE_OVERLAY);
+
+  /* Launch encryption on CPU 1 */
+  encrypt_done = false;
+  if (xTaskCreatePinnedToCore(encrypt_task, "kef_enc", ENCRYPT_TASK_STACK_SIZE,
+                              NULL, 5, &encrypt_task_handle, 1) != pdPASS) {
+    SECURE_FREE_BUFFER(encrypt_key_copy, encrypt_key_copy_len);
+    encrypt_key_copy_len = 0;
+    if (progress_dialog) {
+      lv_obj_del(progress_dialog);
+      progress_dialog = NULL;
+    }
+    ui_text_input_show(&text_input);
+    dialog_show_error_timeout("Task creation failed", NULL, 0);
+    return false;
+  }
+
+  encrypt_poll_timer = lv_timer_create(encrypt_poll_timer_cb, 100, NULL);
+  return true;
+}
+
 static void password_ready_cb(lv_event_t *e) {
   (void)e;
   const char *text = lv_textarea_get_text(text_input.textarea);
@@ -333,31 +383,109 @@ static void password_ready_cb(lv_event_t *e) {
 
   lv_textarea_set_text(text_input.textarea, "");
 
-  /* Show loading state */
-  ui_text_input_hide(&text_input);
-  progress_dialog =
-      dialog_show_progress("KEF", "Encrypting...", DIALOG_STYLE_OVERLAY);
-
-  /* Launch encryption on CPU 1 */
-  encrypt_done = false;
-  if (xTaskCreatePinnedToCore(encrypt_task, "kef_enc", ENCRYPT_TASK_STACK_SIZE,
-                              NULL, 5, &encrypt_task_handle, 1) != pdPASS) {
-    SECURE_FREE_BUFFER(encrypt_key_copy, encrypt_key_copy_len);
-    encrypt_key_copy_len = 0;
-    if (progress_dialog) {
-      lv_obj_del(progress_dialog);
-      progress_dialog = NULL;
-    }
-    ui_text_input_show(&text_input);
-    dialog_show_error_timeout("Task creation failed", NULL, 0);
-    return;
-  }
-
-  encrypt_poll_timer = lv_timer_create(encrypt_poll_timer_cb, 100, NULL);
+  start_encryption_task();
 }
 
 static void show_password_input(void) {
   create_overlay("Encryption Key", "key", true, password_ready_cb);
+}
+
+/* ---------- Scan key path ---------- */
+
+/* The overlay stays alive (hidden) under the scanner and the verify page,
+ * so the typed-entry state survives Cancel and Back. */
+
+static void scan_key_show_overlay(void) {
+  kef_encrypt_page_show();
+  ui_text_input_show(&text_input);
+}
+
+static void scan_key_btn_cb(lv_event_t *e) {
+  (void)e;
+  kef_encrypt_page_hide();
+  ui_text_input_hide(&text_input);
+  qr_scanner_page_create(lv_screen_active(), scan_key_return_cb);
+  qr_scanner_page_show();
+}
+
+/* Scanner callback — fires on both completion and cancel. */
+static void scan_key_return_cb(void) {
+  size_t len = 0;
+  char *content = qr_scanner_get_completed_content_with_len(&len);
+  /* Payload must be read before destroying the scanner: the parser buffers
+   * are freed on destroy. */
+  qr_scanner_page_hide();
+  qr_scanner_page_destroy();
+
+  if (!content) {
+    scan_key_show_overlay();
+    return;
+  }
+
+  /* Copy into a NUL-terminated, length-bounded buffer before freeing the
+   * scanner's allocation. */
+  char key[KEF_KEY_MAX_LEN + 1];
+  size_t copy_len = len < KEF_KEY_MAX_LEN ? len : KEF_KEY_MAX_LEN;
+  memcpy(key, content, copy_len);
+  key[copy_len] = '\0';
+  SECURE_FREE_STRING(content);
+
+  if (key[0] == '\0') {
+    secure_memzero(key, sizeof(key));
+    scan_key_show_overlay();
+    return;
+  }
+  if (len > KEF_KEY_MAX_LEN) {
+    dialog_show_error_timeout("Key too long", NULL, 0);
+    secure_memzero(key, sizeof(key));
+    scan_key_show_overlay();
+    return;
+  }
+
+  char *copy = strdup(key);
+  secure_memzero(key, sizeof(key));
+  if (!copy) {
+    dialog_show_error_timeout("Out of memory", NULL, 0);
+    scan_key_show_overlay();
+    return;
+  }
+
+  kef_key_verify_page_create(copy, true, verify_back_cb, verify_rescan_cb,
+                             verify_accept_cb);
+  kef_key_verify_page_show();
+}
+
+/* The verify page has already been destroyed by the time these run. */
+static void verify_back_cb(void) { scan_key_show_overlay(); }
+
+static void verify_rescan_cb(void) {
+  kef_encrypt_page_hide();
+  ui_text_input_hide(&text_input);
+  qr_scanner_page_create(lv_screen_active(), scan_key_return_cb);
+  qr_scanner_page_show();
+}
+
+static void verify_accept_cb(const char *key) {
+  /* Replace any half-typed confirmation state with the verified key. */
+  SECURE_FREE_BUFFER(confirm_key, confirm_key_len);
+  confirm_key = NULL;
+  confirm_key_len = 0;
+
+  size_t len = strlen(key);
+  encrypt_key_copy = malloc(len);
+  if (!encrypt_key_copy) {
+    dialog_show_error_timeout("Out of memory", NULL, 0);
+    scan_key_show_overlay();
+    return;
+  }
+  memcpy(encrypt_key_copy, key, len);
+  encrypt_key_copy_len = len;
+
+  if (text_input.textarea)
+    lv_textarea_set_text(text_input.textarea, "");
+
+  if (!start_encryption_task())
+    scan_key_show_overlay();
 }
 
 /* ---------- ID input ---------- */

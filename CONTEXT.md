@@ -32,14 +32,24 @@ The `[base] -> [passphrase]` fingerprint pair shown to the user so they can
 verify that a passphrase produces the expected keys before it is applied.
 
 **Verify Passphrase screen**:
-The shared confirmation step for both passphrase entry paths (keyboard and
-QR scan). Shows the candidate passphrase, the fingerprint transition, and
-Confirm / Back / Rescan actions.
+The confirmation step for the scanned passphrase path (keyboard entry
+confirms by fingerprint transition dialog instead). Shows the candidate
+passphrase, the fingerprint transition, and Confirm / Back / Rescan actions.
 
 **Scan input**:
-Supplying a value (passphrase, mnemonic, descriptor) by scanning a QR code
-with the camera instead of typing it. A scanned passphrase bypasses the
-keyboard entry and goes straight to verification.
+Supplying a value (passphrase, KEF encryption key, mnemonic, descriptor) by
+scanning a QR code with the camera instead of typing it. A scanned
+passphrase bypasses the keyboard entry and goes straight to verification.
+
+**KEF Encryption Key**:
+The password that protects a KEF envelope — used when backing up the
+mnemonic (or a descriptor, or displaying an encrypted SeedQR). Typed twice
+for confirmation, or scanned once from a QR code and confirmed on the
+Verify Key screen. Not wallet-derived, so it has no fingerprint transition.
+
+**Verify Key screen**:
+The confirmation step for a scanned KEF encryption key. Shows the key
+masked with an eye toggle and Confirm / Back / Rescan actions.
 
 **Derivation**:
 Turning the mnemonic (and optional passphrase) into the wallet's master key

@@ -302,6 +302,7 @@ set(APP_PAGE_SOURCES
     ${APP_PAGES_DIR}/shared/descriptor_loader.c
     ${APP_PAGES_DIR}/shared/kef_decrypt_page.c
     ${APP_PAGES_DIR}/shared/kef_encrypt_page.c
+    ${APP_PAGES_DIR}/shared/kef_key_verify.c
     ${APP_PAGES_DIR}/shared/key_confirmation.c
     ${APP_PAGES_DIR}/shared/mnemonic_editor.c
     ${APP_PAGES_DIR}/shared/passphrase_verify.c
