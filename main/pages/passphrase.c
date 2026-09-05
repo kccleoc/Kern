@@ -1,6 +1,5 @@
 #include "passphrase.h"
 #include "../core/key.h"
-#include "../qr/scanner.h"
 #include "../ui/assets/icons.h"
 #include "../ui/dialog.h"
 #include "../ui/input_helpers.h"
@@ -9,12 +8,11 @@
 #include "../utils/passphrase.h"
 #include "../utils/secure_mem.h"
 #include "shared/passphrase_verify.h"
+#include "shared/text_input_scan.h"
 #include <lvgl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-static void scan_return_cb(void);
 
 static lv_obj_t *passphrase_screen = NULL;
 static ui_text_input_t text_input = {0};
@@ -72,65 +70,45 @@ static void secure_clear_textarea(void) {
   lv_textarea_set_text(text_input.textarea, "");
 }
 
+/* Forward: the keyboard scan key captures via the shared text-input scan
+ * helper, then scan_loaded_cb routes the result to the Verify page. */
+static void start_passphrase_scan(void);
+static void scan_loaded_cb(void);
+
 /* Returns the passphrase to the entry page. The verify page has already been
  * destroyed by the time this runs. */
 static void verify_return_cb(void) { passphrase_page_show(); }
 
-/* Re-opens the camera (scan path only). */
-static void verify_rescan_cb(void) {
-  passphrase_page_hide();
-  qr_scanner_page_create(lv_screen_active(), scan_return_cb);
-  qr_scanner_page_show();
-}
+/* Re-opens the camera via text_input_scan (scan path only). The verify page
+ * has already destroyed itself by the time this runs. */
+static void verify_rescan_cb(void) { start_passphrase_scan(); }
 
-/* Scanner callback — fires on both completion and cancel. */
-static void scan_return_cb(void) {
-  size_t len = 0;
-  char *content = qr_scanner_get_completed_content_with_len(&len);
-  /* Payload must be read before destroying the scanner: the parser buffers
-   * are freed on destroy. */
-  qr_scanner_page_hide();
-  qr_scanner_page_destroy();
-
-  if (!content) {
-    passphrase_page_show();
+/* text_input_scan loaded callback: the scanned text is already in the
+ * textarea (validated as text/UTF-8 with any trailing newline stripped).
+ * Enforce the length + word-list constraints, then hand off to the Verify
+ * Passphrase page instead of leaving the secret in the entry field. */
+static void scan_loaded_cb(void) {
+  const char *text = lv_textarea_get_text(text_input.textarea);
+  if (!text || text[0] == '\0')
     return;
-  }
-
-  /* Copy into a NUL-terminated, length-bounded buffer before freeing the
-   * scanner's allocation. */
-  char pass[PASSPHRASE_MAX_LEN + 1];
-  size_t copy_len = len < PASSPHRASE_MAX_LEN ? len : PASSPHRASE_MAX_LEN;
-  memcpy(pass, content, copy_len);
-  pass[copy_len] = '\0';
-  SECURE_FREE_STRING(content);
-
-  if (pass[0] == '\0') {
-    secure_memzero(pass, sizeof(pass));
-    passphrase_page_show();
-    return;
-  }
-  if (len > PASSPHRASE_MAX_LEN) {
+  if (strlen(text) > PASSPHRASE_MAX_LEN) {
     dialog_show_error_timeout("Passphrase too long", NULL, 0);
-    secure_memzero(pass, sizeof(pass));
-    passphrase_page_show();
+    secure_clear_textarea();
     return;
   }
   if (passphrase_word_list_enabled()) {
     char err[128];
-    if (!passphrase_validate_word_list(pass, err, sizeof(err))) {
+    if (!passphrase_validate_word_list(text, err, sizeof(err))) {
       dialog_show_error_timeout(err, NULL, 0);
-      secure_memzero(pass, sizeof(pass));
-      passphrase_page_show();
+      secure_clear_textarea();
       return;
     }
   }
 
-  char *copy = strdup(pass);
-  secure_memzero(pass, sizeof(pass));
+  char *copy = strdup(text);
+  secure_clear_textarea();
   if (!copy) {
     dialog_show_error_timeout("Out of memory", NULL, 0);
-    passphrase_page_show();
     return;
   }
 
@@ -140,17 +118,25 @@ static void scan_return_cb(void) {
   passphrase_verify_page_show();
 }
 
-static void scan_btn_cb(lv_event_t *e) {
-  (void)e;
-  passphrase_page_hide();
-  qr_scanner_page_create(lv_screen_active(), scan_return_cb);
-  qr_scanner_page_show();
+static void start_passphrase_scan(void) {
+  text_input_scan_cfg_t cfg = {&text_input, passphrase_page_hide,
+                               passphrase_page_show, scan_loaded_cb};
+  text_input_scan_start(&cfg);
+}
+
+static void scan_key_cb(void *user_data) {
+  (void)user_data;
+  start_passphrase_scan();
 }
 
 static void keyboard_ready_cb(lv_event_t *e) {
   (void)e;
 
   const char *text = lv_textarea_get_text(text_input.textarea);
+  if (text && strlen(text) > PASSPHRASE_MAX_LEN) {
+    dialog_show_error_timeout("Passphrase too long", NULL, 0);
+    return;
+  }
   const char *passphrase = (text && text[0] != '\0') ? text : NULL;
 
   if (passphrase && passphrase_word_list_enabled()) {
@@ -179,8 +165,8 @@ static void keyboard_ready_cb(lv_event_t *e) {
 
   char prompt[128];
   snprintf(prompt, sizeof(prompt),
-           "Confirm passphrase?\n\n" ICON_FINGERPRINT
-           " %s > #%06X " ICON_FINGERPRINT " %s#",
+           "Confirm passphrase?\n\n" ICON_FINGERPRINT " %s\n" LV_SYMBOL_DOWN
+           "\n#%06X " ICON_FINGERPRINT " %s#",
            before_hex, (unsigned)highlight, after_hex);
   dialog_show_confirm(prompt, confirm_passphrase_cb, NULL,
                       DIALOG_STYLE_OVERLAY);
@@ -204,9 +190,11 @@ void passphrase_page_create(lv_obj_t *parent, void (*return_cb)(void),
   // Text input (textarea + keyboard), masked with an eye toggle to reveal
   ui_text_input_create(&text_input, passphrase_screen, "passphrase", true,
                        keyboard_ready_cb);
-  lv_textarea_set_max_length(text_input.textarea, PASSPHRASE_MAX_LEN);
+  ui_text_input_enable_scan(&text_input, scan_key_cb, NULL);
 
-  // Rows between the textarea and the keyboard: word-list toggle + scan.
+  // Word-list toggle row between the textarea and the keyboard. Scanned
+  // input arrives via the keyboard's scan key and is routed to the Verify
+  // Passphrase page (see scan_loaded_cb).
   int32_t ta_bottom = lv_obj_get_y(text_input.textarea) +
                       lv_obj_get_height(text_input.textarea);
 
@@ -217,9 +205,8 @@ void passphrase_page_create(lv_obj_t *parent, void (*return_cb)(void),
 
   wordlist_row = settings_row_toggle(rows, "BIP39 words", false, NULL,
                                      "BIP39 words", WORDLIST_HELP);
-  settings_row_action(rows, "Scan Passphrase", scan_btn_cb);
 
-  // Shrink the keyboard to clear the new rows.
+  // Shrink the keyboard to clear the new row.
   lv_obj_update_layout(rows);
   int32_t rows_bottom =
       lv_obj_get_y(rows) + lv_obj_get_height(rows) + theme_default_padding();

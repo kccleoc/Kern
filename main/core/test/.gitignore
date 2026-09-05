@@ -13,6 +13,16 @@ libwally.a
 test_miniscript_policy
 test_bip322
 test_estimated_entropy
+test_utf8
 test_pin_attempt
 test_passphrase_words
 test_kef
+test_psbt_parse
+test_fw_update
+test_descriptor_validator
+test_storage
+test_storage_core.o
+test_key
+test_crypto_utils
+test_pbkdf2
+test_pbkdf2_core.o

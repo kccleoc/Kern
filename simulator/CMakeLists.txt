@@ -20,6 +20,9 @@ endif()
 # Board feature flags
 if(SIM_BOARD STREQUAL "wave_35")
   set(BSP_HAS_PMIC TRUE)
+elseif(SIM_BOARD STREQUAL "wave_43" OR SIM_BOARD STREQUAL "wave_5"
+       OR SIM_BOARD STREQUAL "wave_7b")
+  set(BSP_BATTERY_ADC TRUE)
 endif()
 
 find_package(SDL2 REQUIRED)
@@ -163,6 +166,7 @@ set(APP_UTIL_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/utils/estimated_entropy.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/utils/passphrase.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/utils/session.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/utils/utf8.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/utils/worker_task.c
 )
 
@@ -183,6 +187,7 @@ set(APP_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/core/message_sign.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/core/bip322.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/core/psbt.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/core/psbt_parse.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/core/ss_whitelist.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/core/registry.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/core/descriptor_checksum.c
@@ -309,6 +314,7 @@ set(APP_PAGE_SOURCES
     ${APP_PAGES_DIR}/shared/passphrase_verify.c
     ${APP_PAGES_DIR}/shared/sd_file_browser.c
     ${APP_PAGES_DIR}/shared/storage_browser.c
+    ${APP_PAGES_DIR}/shared/text_input_scan.c
     ${APP_PAGES_DIR}/shared/wipe_flash_dialog.c
     # Top-level pages
     ${APP_PAGES_DIR}/capture_entropy.c
@@ -321,6 +327,11 @@ set(APP_PAGE_SOURCES
     ${APP_PAGES_DIR}/store_mnemonic.c
     # Scan page
     ${APP_PAGES_DIR}/scan/scan.c
+    ${APP_PAGES_DIR}/scan/scan_handlers.c
+    ${APP_PAGES_DIR}/scan/scan_message_sign.c
+    ${APP_PAGES_DIR}/scan/scan_psbt_review.c
+    ${APP_PAGES_DIR}/scan/scan_psbt_sign.c
+    ${APP_PAGES_DIR}/scan/scan_review_widgets.c
     ${APP_PAGES_DIR}/scan/psbt_sign_policy.c
     # Load page
     ${APP_PAGES_DIR}/load/load.c
@@ -406,6 +417,7 @@ target_compile_definitions(kern_simulator PRIVATE
     K_QUIRC_BILINEAR_THRESHOLD
     $<$<BOOL:${SIM_WEBCAM}>:SIM_WEBCAM=1>
     $<$<BOOL:${BSP_HAS_PMIC}>:BSP_HAS_PMIC=1>
+    $<$<BOOL:${BSP_BATTERY_ADC}>:BSP_BATTERY_ADC=1>
     $<$<STREQUAL:${SIM_BOARD},wave_4b>:CONFIG_KERN_BOARD_WAVE_4B=1>
     $<$<STREQUAL:${SIM_BOARD},wave_35>:CONFIG_KERN_BOARD_WAVE_35=1>
     $<$<STREQUAL:${SIM_BOARD},wave_5>:CONFIG_KERN_BOARD_WAVE_5=1>
@@ -461,6 +473,7 @@ target_link_libraries(kern_simulator PRIVATE
 add_executable(kern_sim_storage_smoke
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/storage_smoke.c
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/esp_idf_stubs/storage_sim.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/esp_idf_stubs/freertos_sim.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/core/kef.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/core/base43.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/core/crypto_utils.c
@@ -496,6 +509,7 @@ target_compile_options(kern_sim_storage_smoke PRIVATE
 
 target_link_libraries(kern_sim_storage_smoke PRIVATE
     m
+    pthread
     ${MBEDTLS_LIB}
     ${MBEDCRYPTO_LIB}
     ${MBEDX509_LIB}

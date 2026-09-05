@@ -5,10 +5,15 @@
 
 #include <string.h>
 
+#include <bootloader_random.h>
+#include <esp_app_desc.h>
 #include <esp_cpu.h>
+#include <esp_mac.h>
 #include <esp_random.h>
 #include <esp_system.h>
 #include <esp_timer.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #define POOL_WORDS 8
 
@@ -42,17 +47,46 @@ void entropy_pool_stir(uint32_t sample) {
              ((word << 7) | (word >> 25)) ^ sample ^ esp_cpu_get_cycle_count());
 }
 
+static void stir_bytes(const void *data, size_t len) {
+  const uint8_t *p = (const uint8_t *)data;
+  uint32_t word = 0;
+  size_t n = 0;
+  for (size_t i = 0; i < len; i++) {
+    word = (word << 8) | p[i];
+    if (++n == sizeof(word)) {
+      entropy_pool_stir(word);
+      word = 0;
+      n = 0;
+    }
+  }
+  if (n)
+    entropy_pool_stir(word);
+}
+
 void entropy_pool_init(void) {
   entropy_pool_stir((uint32_t)(uintptr_t)&pool);
   entropy_pool_stir((uint32_t)esp_reset_reason());
   entropy_pool_stir((uint32_t)esp_timer_get_time());
 
-  // Whatever the RNG holds this early is still the bootloader's seeding.
-  uint32_t boot[POOL_WORDS];
-  esp_fill_random(boot, sizeof(boot));
-  for (size_t i = 0; i < POOL_WORDS; i++)
-    entropy_pool_stir(boot[i]);
-  secure_memzero(boot, sizeof(boot));
+  // Public values, so they separate rather than add entropy: two devices on
+  // one firmware, and one device across builds, start from distinct states.
+  uint8_t mac[6];
+  if (esp_efuse_mac_get_default(mac) == ESP_OK)
+    stir_bytes(mac, sizeof(mac));
+  const esp_app_desc_t *desc = esp_app_get_description();
+  if (desc)
+    stir_bytes(desc, sizeof(*desc));
+
+  // Without the SAR ADC noise source esp_random() only replays the
+  // bootloader's seeding. Enable it, then take a word per refill window
+  // rather than one bulk read: 32 bits is the whole HW RNG state, and the
+  // delay leaves scheduler jitter between draws.
+  bootloader_random_enable();
+  for (size_t i = 0; i < POOL_WORDS; i++) {
+    entropy_pool_stir(esp_random());
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  bootloader_random_disable();
 }
 
 void entropy_pool_mix(uint8_t *buf, size_t len) {

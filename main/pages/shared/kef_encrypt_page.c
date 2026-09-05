@@ -12,14 +12,13 @@
 #include "kef_encrypt_page.h"
 #include "../../core/kef.h"
 #include "../../core/key.h"
-#include "../../qr/scanner.h"
 #include "../../ui/dialog.h"
 #include "../../ui/input_helpers.h"
-#include "../../ui/settings_row.h"
 #include "../../ui/theme_widgets.h"
 #include "../../utils/secure_mem.h"
 #include "kef_key_verify.h"
 #include "../../utils/worker_task.h"
+#include "text_input_scan.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,8 +61,10 @@ static size_t confirm_key_len = 0;
 /* ---------- Forward declarations ---------- */
 
 static void show_password_input(void);
-static void scan_key_btn_cb(lv_event_t *e);
-static void scan_key_return_cb(void);
+/* Forward: the keyboard scan key captures via text_input_scan, then
+ * scan_loaded_cb routes the result to the Verify Key page. */
+static void start_key_scan(void);
+static void scan_loaded_cb(void);
 static void verify_back_cb(void);
 static void verify_rescan_cb(void);
 static void verify_accept_cb(const char *key);
@@ -159,6 +160,13 @@ static void key_changed_cb(lv_event_t *e) {
   }
 }
 
+static void refresh_strength(void) { key_changed_cb(NULL); }
+
+static void scan_key_cb(void *user_data) {
+  (void)user_data;
+  start_key_scan();
+}
+
 /* ---------- Overlay management ---------- */
 
 static void destroy_overlay(void) {
@@ -206,35 +214,26 @@ static void create_overlay(const char *title, const char *placeholder,
                        ready_cb);
 
   if (password_mode) {
+    ui_text_input_enable_scan(&text_input, scan_key_cb, NULL);
     strength_label = lv_label_create(overlay_screen);
     lv_label_set_text(strength_label, "");
     lv_obj_set_style_text_font(strength_label, theme_font_small(), 0);
+    lv_obj_align_to(strength_label, text_input.textarea,
+                    LV_ALIGN_OUT_BOTTOM_MID, 0, 5);
     lv_obj_add_event_cb(text_input.keyboard, key_changed_cb,
                         LV_EVENT_VALUE_CHANGED, NULL);
 
-    // Scan row between the textarea and the keyboard, mirroring the
-    // passphrase page.
-    int32_t ta_bottom = lv_obj_get_y(text_input.textarea) +
-                        lv_obj_get_height(text_input.textarea);
-    lv_obj_t *rows = theme_create_flex_column(overlay_screen);
-    lv_obj_set_width(rows, LV_PCT(90));
-    lv_obj_set_style_pad_gap(rows, theme_small_padding(), 0);
-    lv_obj_align(rows, LV_ALIGN_TOP_MID, 0, ta_bottom + theme_small_padding());
-    settings_row_action(rows, "Scan Key", scan_key_btn_cb);
-
-    // Strength meter under the scan row.
-    lv_obj_align_to(strength_label, rows, LV_ALIGN_OUT_BOTTOM_MID, 0, 5);
-
-    // Shrink the bottom-anchored keyboard to clear the row and the strength
-    // label.
-    lv_obj_update_layout(rows);
-    int32_t rows_bottom =
-        lv_obj_get_y(rows) + lv_obj_get_height(rows) + theme_default_padding();
-    int32_t kb_h = LV_VER_RES - rows_bottom -
-                   (lv_font_get_line_height(theme_font_small()) + 2 * 5);
-    if (kb_h < theme_min_touch_size())
-      kb_h = theme_min_touch_size();
-    lv_obj_set_height(text_input.keyboard, kb_h);
+    // Shrink the bottom-anchored keyboard if the textarea-keyboard gap can't
+    // fit the strength label.
+    lv_obj_update_layout(lv_screen_active());
+    lv_area_t ta_area, kb_area;
+    lv_obj_get_coords(text_input.textarea, &ta_area);
+    lv_obj_get_coords(text_input.keyboard, &kb_area);
+    int32_t needed = lv_font_get_line_height(theme_font_small()) + 2 * 5;
+    int32_t deficit = needed - (kb_area.y1 - ta_area.y2 - 1);
+    if (deficit > 0)
+      lv_obj_set_height(text_input.keyboard,
+                        lv_area_get_height(&kb_area) - deficit);
   }
 }
 
@@ -370,7 +369,7 @@ static void show_password_input(void) {
   create_overlay("Encryption Key", "key", true, password_ready_cb);
 }
 
-/* ---------- Scan key path ---------- */
+/* ---------- Scan key path (via text_input_scan + Verify Key page) ---------- */
 
 /* The overlay stays alive (hidden) under the scanner and the verify page,
  * so the typed-entry state survives Cancel and Back. */
@@ -378,55 +377,29 @@ static void show_password_input(void) {
 static void scan_key_show_overlay(void) {
   kef_encrypt_page_show();
   ui_text_input_show(&text_input);
+  refresh_strength();
 }
 
-static void scan_key_btn_cb(lv_event_t *e) {
-  (void)e;
-  kef_encrypt_page_hide();
-  ui_text_input_hide(&text_input);
-  qr_scanner_page_create(lv_screen_active(), scan_key_return_cb);
-  qr_scanner_page_show();
-}
-
-/* Scanner callback — fires on both completion and cancel. */
-static void scan_key_return_cb(void) {
-  size_t len = 0;
-  char *content = qr_scanner_get_completed_content_with_len(&len);
-  /* Payload must be read before destroying the scanner: the parser buffers
-   * are freed on destroy. */
-  qr_scanner_page_hide();
-  qr_scanner_page_destroy();
-
-  if (!content) {
-    scan_key_show_overlay();
+/* text_input_scan loaded callback: the scanned key is already in the
+ * textarea (validated as text/UTF-8 with any trailing newline stripped).
+ * Enforce the length cap, then hand off to the Verify Key page instead of
+ * leaving the secret in the entry field. */
+static void scan_loaded_cb(void) {
+  const char *text = lv_textarea_get_text(text_input.textarea);
+  if (!text || text[0] == '\0')
     return;
-  }
-
-  /* Copy into a NUL-terminated, length-bounded buffer before freeing the
-   * scanner's allocation. */
-  char key[KEF_KEY_MAX_LEN + 1];
-  size_t copy_len = len < KEF_KEY_MAX_LEN ? len : KEF_KEY_MAX_LEN;
-  memcpy(key, content, copy_len);
-  key[copy_len] = '\0';
-  SECURE_FREE_STRING(content);
-
-  if (key[0] == '\0') {
-    secure_memzero(key, sizeof(key));
-    scan_key_show_overlay();
-    return;
-  }
-  if (len > KEF_KEY_MAX_LEN) {
+  if (strlen(text) > KEF_KEY_MAX_LEN) {
     dialog_show_error_timeout("Key too long", NULL, 0);
-    secure_memzero(key, sizeof(key));
-    scan_key_show_overlay();
+    lv_textarea_set_text(text_input.textarea, "");
+    refresh_strength();
     return;
   }
 
-  char *copy = strdup(key);
-  secure_memzero(key, sizeof(key));
+  char *copy = strdup(text);
+  lv_textarea_set_text(text_input.textarea, "");
+  refresh_strength();
   if (!copy) {
     dialog_show_error_timeout("Out of memory", NULL, 0);
-    scan_key_show_overlay();
     return;
   }
 
@@ -435,15 +408,16 @@ static void scan_key_return_cb(void) {
   kef_key_verify_page_show();
 }
 
+static void start_key_scan(void) {
+  text_input_scan_cfg_t cfg = {&text_input, kef_encrypt_page_hide,
+                               scan_key_show_overlay, scan_loaded_cb};
+  text_input_scan_start(&cfg);
+}
+
 /* The verify page has already been destroyed by the time these run. */
 static void verify_back_cb(void) { scan_key_show_overlay(); }
 
-static void verify_rescan_cb(void) {
-  kef_encrypt_page_hide();
-  ui_text_input_hide(&text_input);
-  qr_scanner_page_create(lv_screen_active(), scan_key_return_cb);
-  qr_scanner_page_show();
-}
+static void verify_rescan_cb(void) { start_key_scan(); }
 
 static void verify_accept_cb(const char *key) {
   /* Replace any half-typed confirmation state with the verified key. */
@@ -540,11 +514,15 @@ void kef_encrypt_page_create(lv_obj_t *parent, void (*return_cb)(void),
 void kef_encrypt_page_show(void) {
   if (overlay_screen)
     lv_obj_clear_flag(overlay_screen, LV_OBJ_FLAG_HIDDEN);
+  if (text_input.keyboard)
+    lv_obj_clear_flag(text_input.keyboard, LV_OBJ_FLAG_HIDDEN);
 }
 
 void kef_encrypt_page_hide(void) {
   if (overlay_screen)
     lv_obj_add_flag(overlay_screen, LV_OBJ_FLAG_HIDDEN);
+  if (text_input.keyboard)
+    lv_obj_add_flag(text_input.keyboard, LV_OBJ_FLAG_HIDDEN);
 }
 
 void kef_encrypt_page_destroy(void) {

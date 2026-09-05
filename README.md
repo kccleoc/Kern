@@ -40,10 +40,10 @@ only combination that gets autofocus.
 
 ## Prerequisites
 
-Kern targets [ESP-IDF v6.0.2](https://docs.espressif.com/projects/esp-idf/en/v6.0.2/esp32p4/get-started/index.html). Install it for the `esp32p4` target:
+Kern targets [ESP-IDF v6.1](https://docs.espressif.com/projects/esp-idf/en/v6.1/esp32p4/get-started/index.html). Install it for the `esp32p4` target:
 
 ```bash
-git clone --depth 1 --recurse-submodules --shallow-submodules -b v6.0.2 https://github.com/espressif/esp-idf.git ~/esp/esp-idf
+git clone --depth 1 --recurse-submodules --shallow-submodules -b v6.1 https://github.com/espressif/esp-idf.git ~/esp/esp-idf
 ~/esp/esp-idf/install.sh esp32p4
 . ~/esp/esp-idf/export.sh
 ```
@@ -208,8 +208,14 @@ Every pull request and push to `master` produces a firmware artifact for each su
 5. Flash using the pre-computed offsets from `flash_args`:
 
    ```bash
-   esptool --chip esp32p4 --baud 460800 write_flash $(cat flash_args)
+   esptool --chip esp32p4 --baud 460800 write-flash $(cat flash_args)
    ```
+
+   > **Note:** Artifacts built before September 2026 ship a `flash_args` that still points at the `bootloader/` and `partition_table/` build subdirectories, which the flat zip does not contain. For those, pass the offsets explicitly:
+   >
+   > ```bash
+   > esptool --chip esp32p4 --baud 460800 write-flash --flash-mode dio --flash-freq 80m --flash-size keep 0x2000 bootloader.bin 0x10000 partition-table.bin 0x1e000 ota_data_initial.bin 0x20000 kern.bin
+   > ```
 
 ## Flashing Pre-releases
 

@@ -163,6 +163,8 @@ bool key_get_xpub(const char *path, char **xpub_out) {
                         KEY_MAX_DERIVATION_DEPTH)) {
     return false;
   }
+  if (path_depth == 0)
+    return key_get_master_xpub(xpub_out);
 
   struct ext_key *derived_key = NULL;
   int ret =
@@ -230,7 +232,7 @@ bool key_get_mnemonic_words(char ***words_out, size_t *word_count_out) {
     words[i] = strdup(token);
     if (!words[i]) {
       for (size_t j = 0; j < i; j++) {
-        free(words[j]);
+        SECURE_FREE_STRING(words[j]);
       }
       free(words);
       SECURE_FREE_STRING(mnemonic_copy);

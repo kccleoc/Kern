@@ -2,6 +2,7 @@
 
 #include "backup_menu.h"
 #include "../../../core/storage.h"
+#include "../../../ui/assets/icons.h"
 #include "../../../ui/dialog.h"
 #include "../../../ui/menu.h"
 #include "../../../ui/theme_widgets.h"
@@ -97,10 +98,13 @@ void backup_menu_page_create(lv_obj_t *parent, void (*return_cb)(void)) {
   if (!backup_menu)
     return;
 
-  ui_menu_add_entry(backup_menu, "Words", menu_words_cb);
-  ui_menu_add_entry(backup_menu, "QR Code", menu_qr_cb);
-  ui_menu_add_entry(backup_menu, "Save to Flash", menu_save_flash_cb);
-  ui_menu_add_entry(backup_menu, "Save to SD", menu_save_sd_cb);
+  ui_menu_add_entry_with_icon(backup_menu, LV_SYMBOL_LIST, "Words",
+                              menu_words_cb);
+  ui_menu_add_entry_with_icon(backup_menu, ICON_QR_CODE, "QR Code", menu_qr_cb);
+  ui_menu_add_entry_with_icon(backup_menu, LV_SYMBOL_DRIVE, "Save to Flash",
+                              menu_save_flash_cb);
+  ui_menu_add_entry_with_icon(backup_menu, ICON_SD_CARD, "Save to SD",
+                              menu_save_sd_cb);
 }
 
 void backup_menu_page_show(void) {

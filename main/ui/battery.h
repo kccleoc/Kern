@@ -9,6 +9,8 @@
  * percentage. Colour reflects charge state: green (>=76%), white (>=40%),
  * orange (>=20%), red (<20%). When charging, LV_SYMBOL_CHARGE is appended
  * to the battery icon and the whole label turns green.
+ * On boards that only sense the pack voltage, the label is hidden until the
+ * pack is nearly empty, then shown in red.
  * Returns NULL if PMIC is unavailable. The refresh timer is automatically
  * deleted when the label is destroyed.
  *
