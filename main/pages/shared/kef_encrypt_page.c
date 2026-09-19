@@ -17,8 +17,8 @@
 #include "../../ui/theme_widgets.h"
 #include "../../utils/secure_mem.h"
 #include "../../utils/session_cleanup.h"
-#include "kef_key_verify.h"
 #include "../../utils/worker_task.h"
+#include "kef_key_verify.h"
 #include "secure_memory.h"
 #include "text_input_scan.h"
 
@@ -375,7 +375,8 @@ static void show_password_input(void) {
   create_overlay("Encryption Key", "key", true, password_ready_cb);
 }
 
-/* ---------- Scan key path (via text_input_scan + Verify Key page) ---------- */
+/* ---------- Scan key path (via text_input_scan + Verify Key page) ----------
+ */
 
 /* The overlay stays alive (hidden) under the scanner and the verify page,
  * so the typed-entry state survives Cancel and Back. */

@@ -15,8 +15,8 @@
 #include "../../ui/theme_widgets.h"
 #include "../../utils/secure_mem.h"
 #include "../../utils/session_cleanup.h"
-#include "kef_key_verify.h"
 #include "../../utils/worker_task.h"
+#include "kef_key_verify.h"
 #include "secure_memory.h"
 #include "text_input_scan.h"
 #include <stdlib.h>
@@ -147,7 +147,8 @@ static void keyboard_ready_cb(lv_event_t *e) {
   start_decrypt(text, strlen(text));
 }
 
-/* ---------- Scan key path (via text_input_scan + Verify Key page) ---------- */
+/* ---------- Scan key path (via text_input_scan + Verify Key page) ----------
+ */
 
 /* The page stays alive (hidden) under the scanner and the verify page, so
  * the envelope survives Cancel and Back. */
