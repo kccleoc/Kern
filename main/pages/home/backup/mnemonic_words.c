@@ -2,9 +2,11 @@
 
 #include "mnemonic_words.h"
 #include "../../../core/key.h"
+#include "../../../ui/dialog.h"
 #include "../../../ui/theme.h"
 #include "../../../ui/theme_widgets.h"
 #include "../../../utils/secure_mem.h"
+#include "../../../utils/session_cleanup.h"
 #include <lvgl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +53,7 @@ static void add_word_row(lv_obj_t *col, size_t index, const char *word,
 }
 
 void mnemonic_words_page_create(lv_obj_t *parent, void (*return_cb)(void)) {
+  session_cleanup_register(mnemonic_words_page_destroy);
   if (!parent || !key_is_loaded())
     return;
 
@@ -58,8 +61,11 @@ void mnemonic_words_page_create(lv_obj_t *parent, void (*return_cb)(void)) {
 
   char **words = NULL;
   size_t word_count = 0;
-  if (!key_get_mnemonic_words(&words, &word_count))
+  if (!key_get_mnemonic_words(&words, &word_count)) {
+    dialog_show_error_timeout("Not enough internal RAM for mnemonic", return_cb,
+                              0);
     return;
+  }
 
   mnemonic_screen = theme_create_page_container(parent);
   lv_obj_add_flag(mnemonic_screen, LV_OBJ_FLAG_CLICKABLE);
@@ -142,6 +148,7 @@ void mnemonic_words_page_hide(void) {
 }
 
 void mnemonic_words_page_destroy(void) {
+  session_cleanup_unregister(mnemonic_words_page_destroy);
   if (mnemonic_screen) {
     lv_obj_del(mnemonic_screen);
     mnemonic_screen = NULL;

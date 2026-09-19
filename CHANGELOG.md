@@ -1,12 +1,41 @@
 # Changelog
 
-## [Unreleased]
+## [0.0.19] - 2026-09-17
 
-### Fixed
-- Camera preview flicker in bright areas on CrowPanel (SC2336): esp_ipa 2.2.0 hunts around the AE target where 2.1.0 did not. The SC2336 tuning now widens the AGC dead band from roughly ±3.5 to ±10 luma around the target, slows the increase and decrease speeds, and recomputes exposure every third frame instead of every frame. A scanner is better served by steady exposure than by precise exposure, and the result is calmer than 0.0.18 was
+### Added
+- A scan-QR key on the keyboard loads text straight into the BIP39 passphrase and KEF key fields, so a long secret can come from a QR instead of being typed. It is opt-in per input: PIN and descriptor-name entry keep the plain keyboard. Non-text content is rejected by a strict UTF-8 validator, and non-ASCII text warns before use
+- Low battery warning on wave_43, wave_5 and wave_7b. These boards have no PMIC, only the pack voltage on GPIO20 through a 200k/100k divider, so the reading is reported as millivolts and percentage and charge status stay unsupported. Voltage alone cannot give a charge level. The header icon stays hidden above 3.5 V, shows in red below it, and clears again at 3.6 V. wave_7b is schematic-verified but untested on hardware
+- Miniscript account controls on the public key page: a -/+ stepper for the account, offered only while the path is the selected network and script's standard four-node, fully hardened one; custom paths remain editable via Path, and a standard Miniscript account survives a script change. The export layout is responsive: the QR takes whatever space the path and a Show XPUB button leave, and landscape places those details beside the QR instead of spending scarce vertical space on them
+- Icons on the Back Up menu entries, mirroring their Load Mnemonic counterparts, so the same destination is no longer drawn differently depending on which way the data moves
 
 ### Changed
+- Secrets in RAM now follow written rules (`docs/security-plan.md`, section 0c). Allocations are wiped in full before release or relocation, with cleared PSRAM ranges written back to memory; the mnemonic, keys and libwally's private-key and mnemonic temporaries live in internal RAM only, through thread-local libwally allocator adapters, and an allocation failure is reported rather than falling back to PSRAM or to an empty passphrase. Large working buffers keep their existing policies
+- Stack-smashing protection is enabled, at a cost of 64 KB of flash, and `-Wvla` is an error for project sources
+- The entropy pool mixes in the eFuse MAC and the app description. It previously started from values identical on every device: its own address, the reset reason, the boot timestamp. Both additions are public, so they separate devices and builds rather than adding entropy
+- The unproven-fee note is skipped for single-input PSBTs. A signature commits to its own input's amount, so a lie about a lone input only produces an invalid signature; the fee attack needs two inputs signed in two rounds. Invalid or missing amounts stay flagged whatever the count
 - Updated to ESP-IDF 6.1 and newer managed components (esp_video 2.3.0, esp_lvgl_adapter 0.6.4, esp_cam_sensor 2.3.0). esp_video is held at 2.3.x deliberately: 2.4+ requires esp_ipa 2.3, whose prebuilt ESP32-P4 blob is built with the RISC-V B extension this core lacks, which crashes any board running the ISP pipeline controller. No source changes were needed: of 6.1's breaking changes, the deprecated MIPI DSI `on_refresh_done` callback is handled inside the LVGL adapter, the UART wakeup API is unused here, and the ESP32-P4 default-revision move to v3.0 was already covered by the existing `CONFIG_ESP32P4_SELECTS_REV_LESS_V3` setting that keeps v1.x boards supported
+- Boards that do not run the ISP pipeline controller link only the camera detection the app references, which drops libesp_ipa from the image entirely (about 30 KB). crowpanel runs the controller for the SC2336 and stays on dynamic link
+- Host tests now cover fw_update, descriptor_validator, storage, key, crypto_utils and pbkdf2, and the QR decoder regression tests run as part of `just test`
+- The scan page is split by flow: the 2300-line `scan.c` becomes one `scan_*.c` per flow around a shared context, and the PSBT review renderer collects its data up front and renders it through per-section helpers. Function bodies are moved, not rewritten; widget order, texts and colours are unchanged
+- Updated libwally-core and k_quirc, whose decoder now reuses its image capacity across resizes
+
+### Fixed
+- libwally's secret wiping could be optimised away: `config.h` left every wipe backend undefined, so `wally_bzero()` fell through to a bare `memset()` the compiler may elide, including the one `bip32_key_free()` uses to clear a private key
+- Locking and shutting down left sensitive state behind. Registered page owners are now destroyed, pending callbacks cancelled, and the crypto and QR workers joined before their buffers are released; password widgets, retained camera frames and the display banks are cleared before the lock screen renders and before power-off is attempted
+- Mnemonic buffers in the dice-roll, camera-entropy and QR-encoding paths were freed without being wiped first
+- The entropy pool was seeded with `esp_fill_random()`, which only replays the bootloader's seeding unless the SAR ADC source is on. It is now seeded from the physical noise source, a word at a time so each draw gets a refill window
+- A valid PSBT followed by trailing bytes parsed, and the remainder was silently dropped, because all three entry points passed `flags=0`. Parsing must now consume the whole payload; whitespace is trimmed first, since a PSBT ends on its 0x00 separator and a newline on an SD card file is padding, not payload
+- A complete PSBT with two inputs on one address was reported as partially signed: `wally_psbt_sign()` signs every input naming the key it is handed, so the first call signed both and the per-call count found nothing new on the second. Signed inputs are now counted against the finished PSBT
+- On the 32-bit target a hostile firmware segment length made the image offset wrap past the file size, so the layout walk accepted an inconsistent image and left rejection to the signature check alone
+- A descriptor whose key origin is only a fingerprint failed to verify: libwally rejects a zero-length derivation, so `key_get_xpub("m")` failed. A key without any origin showed its derivation as "m/" in the info dialog, which looked like a master key; it now reads N/A
+- `descriptor_validate_and_load()` never completed and leaked its context when called without an info callback, because the auto-confirm path skipped arming the generation its own liveness check reads. Both in-tree callers pass one, so this was latent
+- The BIP32 keypath buffer was a variable-length array sized by the caller; it is now a fixed array with the depth capped
+- A wrapped key-info header inherited the LVGL card style's DPI-scaled row gap, which clipped its second line on wave_35 where the nav bar is one corner button tall
+- Wallet settings rows sat against their top edge with all the slack pooled under the last row; they are now vertically centred and share the leftover space
+- The passphrase confirm prompt stacks the two fingerprints, so the line never wraps mid-fingerprint
+- Camera preview flicker in bright areas on CrowPanel (SC2336): esp_ipa 2.2.0 hunts around the AE target where 2.1.0 did not. The SC2336 tuning now widens the AGC dead band from roughly ±3.5 to ±10 luma around the target, slows the increase and decrease speeds, and recomputes exposure every third frame instead of every frame. A scanner is better served by steady exposure than by precise exposure, and the result is calmer than 0.0.18 was
+- The firmware zip shipped `flash_args` verbatim from the build tree while staging `bootloader.bin` and `partition-table.bin` at its root, so the documented esptool command failed on the `bootloader/` and `partition_table/` subdirectories
+- `just build` exited 0 after a compile error, because the recipe ended with a copy of `compile_commands.json` that cmake writes at configure time. CI was unaffected
 
 ## [0.0.18] - 2026-08-28
 

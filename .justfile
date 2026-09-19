@@ -52,7 +52,9 @@ clean:
     rm -fRd .cache/
     rm -rf simulator/build
     make -C components/bbqr/test clean
+    make -C components/secure_memory/test clean
     make -C main/qr/test clean
+    rm -rf components/k_quirc/test/build
     make -C main/core/test clean
 
 # Stages branding and any locally built firmware into site/ the same way the
@@ -98,6 +100,10 @@ sim-build board="wave_4b": (_check_board board)
         -DSIM_LCD_H_RES=$(just _sim_h_res {{board}}) \
         -DSIM_LCD_V_RES=$(just _sim_v_res {{board}}) \
         && cmake --build build -- -j$(nproc)
+
+# Run simulator storage and sensitive-data lifecycle regressions
+sim-test board="wave_4b": (sim-build board)
+    ctest --test-dir simulator/build --output-on-failure
 
 # Run the desktop simulator with webcam
 # SDL env vars: software renderer for compatibility with ssh -X

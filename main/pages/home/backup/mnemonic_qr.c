@@ -7,6 +7,7 @@
 #include "../../../ui/dialog.h"
 #include "../../../ui/input_helpers.h"
 #include "../../../ui/theme_widgets.h"
+#include "../../../utils/session_cleanup.h"
 #include "../../shared/kef_encrypt_page.h"
 #include <lvgl.h>
 #include <stdio.h>
@@ -509,7 +510,7 @@ static void start_encrypted_flow(void) {
 
   kef_encrypt_page_create(lv_screen_active(), encrypt_return_cb,
                           encrypt_success_cb, compact_seedqr_data,
-                          compact_seedqr_len, NULL);
+                          compact_seedqr_len, NULL, true);
 }
 
 static void destroy_zoom_overlays(void) {
@@ -825,13 +826,17 @@ static void dropdown_cb(lv_event_t *e) {
 }
 
 void mnemonic_qr_page_create(lv_obj_t *parent, void (*return_cb)(void)) {
+  session_cleanup_register(mnemonic_qr_page_destroy);
   if (!parent || !key_is_loaded())
     return;
 
   return_callback = return_cb;
 
-  if (!key_get_mnemonic(&mnemonic_data) || !mnemonic_data)
+  if (!key_get_mnemonic(&mnemonic_data) || !mnemonic_data) {
+    dialog_show_error_timeout("Not enough internal RAM for mnemonic", return_cb,
+                              0);
     return;
+  }
 
   seedqr_data = mnemonic_to_seedqr(mnemonic_data);
   compact_seedqr_data =
@@ -843,6 +848,8 @@ void mnemonic_qr_page_create(lv_obj_t *parent, void (*return_cb)(void)) {
     SECURE_FREE_STRING(seedqr_data);
     SECURE_FREE_BUFFER(compact_seedqr_data, compact_seedqr_len);
     compact_seedqr_len = 0;
+    dialog_show_error_timeout("Not enough internal RAM for mnemonic", return_cb,
+                              0);
     return;
   }
 
@@ -949,6 +956,7 @@ void mnemonic_qr_page_hide(void) {
 }
 
 void mnemonic_qr_page_destroy(void) {
+  session_cleanup_unregister(mnemonic_qr_page_destroy);
   kef_encrypt_page_destroy();
 
   reset_shade_mode();

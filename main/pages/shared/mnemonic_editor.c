@@ -1,6 +1,7 @@
 // Mnemonic Editor Page - Review and edit mnemonic words before loading
 
 #include "mnemonic_editor.h"
+#include "../../core/key.h"
 #include "../../ui/assets/icons.h"
 #include "../../ui/dialog.h"
 #include "../../ui/input_helpers.h"
@@ -8,7 +9,10 @@
 #include "../../ui/menu.h"
 #include "../../ui/theme_widgets.h"
 #include "../../utils/bip39_filter.h"
+#include "../../utils/session_cleanup.h"
+#include "kern_wally.h"
 #include "key_confirmation.h"
+#include "secure_memory.h"
 #include <lvgl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,36 +109,9 @@ static bool get_mnemonic_fingerprint_hex(char *hex_out) {
             sizeof(mnemonic) - strlen(mnemonic) - 1);
   }
 
-  unsigned char seed[BIP39_SEED_LEN_512];
-  if (bip39_mnemonic_to_seed512(mnemonic, NULL, seed, sizeof(seed)) !=
-      WALLY_OK) {
-    secure_memzero(mnemonic, sizeof(mnemonic));
-    secure_memzero(seed, sizeof(seed));
-    return false;
-  }
+  bool ok = key_mnemonic_fingerprint_hex(mnemonic, hex_out);
   secure_memzero(mnemonic, sizeof(mnemonic));
-
-  struct ext_key *master_key = NULL;
-  if (bip32_key_from_seed_alloc(seed, sizeof(seed), BIP32_VER_MAIN_PRIVATE, 0,
-                                &master_key) != WALLY_OK) {
-    secure_memzero(seed, sizeof(seed));
-    return false;
-  }
-  secure_memzero(seed, sizeof(seed));
-
-  unsigned char fingerprint[BIP32_KEY_FINGERPRINT_LEN];
-  if (bip32_key_get_fingerprint(master_key, fingerprint,
-                                BIP32_KEY_FINGERPRINT_LEN) != WALLY_OK) {
-    bip32_key_free(master_key);
-    return false;
-  }
-  bip32_key_free(master_key);
-
-  for (int i = 0; i < BIP32_KEY_FINGERPRINT_LEN; i++)
-    sprintf(hex_out + (i * 2), "%02x", fingerprint[i]);
-  hex_out[BIP32_KEY_FINGERPRINT_LEN * 2] = '\0';
-
-  return true;
+  return ok;
 }
 
 static bool recalculate_last_word(void) {
@@ -182,8 +159,8 @@ static bool recalculate_last_word(void) {
 
   // Generate mnemonic from entropy using libwally
   char *new_mnemonic = NULL;
-  if (bip39_mnemonic_from_bytes(NULL, packed, entropy_bytes, &new_mnemonic) !=
-      WALLY_OK) {
+  if (kern_bip39_mnemonic_from_bytes(NULL, packed, entropy_bytes,
+                                     &new_mnemonic) != WALLY_OK) {
     return false;
   }
 
@@ -270,6 +247,7 @@ static void parse_mnemonic(const char *mnemonic) {
     total_words++;
     token = strtok(NULL, " ");
   }
+  secure_memzero(mnemonic_copy, sizeof(mnemonic_copy));
 }
 
 static void cleanup_editing_ui(void) {
@@ -698,6 +676,7 @@ static void create_ui(void) {
 void mnemonic_editor_page_create(lv_obj_t *parent, void (*return_cb)(void),
                                  void (*success_cb)(void), const char *mnemonic,
                                  bool new_mnemonic) {
+  session_cleanup_register(mnemonic_editor_page_destroy);
   if (!parent)
     return;
 
@@ -751,6 +730,7 @@ void mnemonic_editor_page_hide(void) {
 }
 
 void mnemonic_editor_page_destroy(void) {
+  session_cleanup_unregister(mnemonic_editor_page_destroy);
   cleanup_editing_ui();
 
   if (mnemonic_editor_screen) {
@@ -784,7 +764,7 @@ char *mnemonic_editor_get_mnemonic(void) {
   if (total_words == 0)
     return NULL;
 
-  char *mnemonic = malloc(MAX_MNEMONIC_LEN);
+  char *mnemonic = kern_secret_alloc(MAX_MNEMONIC_LEN);
   if (!mnemonic)
     return NULL;
 

@@ -7,6 +7,7 @@
 #include "../ui/theme_widgets.h"
 #include "../utils/passphrase.h"
 #include "../utils/secure_mem.h"
+#include "../utils/session_cleanup.h"
 #include "shared/passphrase_verify.h"
 #include "shared/text_input_scan.h"
 #include <lvgl.h>
@@ -174,6 +175,7 @@ static void keyboard_ready_cb(lv_event_t *e) {
 
 void passphrase_page_create(lv_obj_t *parent, void (*return_cb)(void),
                             passphrase_success_callback_t success_cb) {
+  session_cleanup_register(passphrase_page_destroy);
   (void)parent;
   return_callback = return_cb;
   success_callback = success_cb;
@@ -232,6 +234,7 @@ void passphrase_page_hide(void) {
 
 void passphrase_page_destroy(void) {
   secure_clear_textarea();
+  session_cleanup_unregister(passphrase_page_destroy);
   ui_text_input_destroy(&text_input);
   if (passphrase_screen) {
     lv_obj_del(passphrase_screen);

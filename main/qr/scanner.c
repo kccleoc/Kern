@@ -9,6 +9,7 @@
 #include "../ui/theme_widgets.h"
 #include "../utils/memory_utils.h"
 #include "../utils/secure_mem.h"
+#include "../utils/session_cleanup.h"
 #include "parser.h"
 #include <bsp/esp-bsp.h>
 #include <driver/ppa.h>
@@ -594,9 +595,9 @@ static void update_decode_roi(qr_decode_roi_t *roi,
   if (target_side > frame_min)
     target_side = frame_min;
 
-  // Keep the decoder allocation stable across small apparent-size changes.
-  // Position is still refreshed after every successful decode, growth is
-  // immediate, and shrinkage occurs once it crosses the hysteresis window.
+  // Keep the ROI stable across small apparent-size changes. Position is still
+  // refreshed after every successful decode, growth is immediate, and shrinkage
+  // occurs once it crosses the hysteresis window.
   if (roi->active && target_side < roi->width &&
       target_side + QR_ROI_SHRINK_HYSTERESIS >= roi->width) {
     target_side = roi->width;
@@ -652,8 +653,6 @@ static void qr_decode_task(void *pvParameters) {
   qr_frame_data_t frame_data;
   k_quirc_result_t qr_result;
   qr_decode_roi_t roi = {0};
-  uint32_t decoder_width = CAMERA_SCREEN_WIDTH;
-  uint32_t decoder_height = CAMERA_SCREEN_HEIGHT;
 
   while (true) {
     if (closing || destruction_in_progress)
@@ -688,24 +687,13 @@ static void qr_decode_task(void *pvParameters) {
       decode_height = frame_data.height;
     }
 
-    if (decoder_width != decode_width || decoder_height != decode_height) {
-      if (k_quirc_resize(qr_decoder, decode_width, decode_height) < 0) {
-        ESP_LOGW(TAG, "Failed to resize QR decoder to ROI %" PRIu32 "x%" PRIu32,
-                 decode_width, decode_height);
-        roi = (qr_decode_roi_t){0};
-        decode_x = 0;
-        decode_y = 0;
-        decode_width = frame_data.width;
-        decode_height = frame_data.height;
-        if (decoder_width != decode_width || decoder_height != decode_height) {
-          if (k_quirc_resize(qr_decoder, decode_width, decode_height) < 0) {
-            release_decode_frame(frame_data.frame_data);
-            continue;
-          }
-        }
-      }
-      decoder_width = decode_width;
-      decoder_height = decode_height;
+    // Initialization reserves the full frame, so all valid ROI transitions
+    // (including returning to the full frame) reuse that capacity.
+    if (k_quirc_resize(qr_decoder, decode_width, decode_height) < 0) {
+      ESP_LOGW(TAG, "Invalid QR decoder dimensions %" PRIu32 "x%" PRIu32,
+               decode_width, decode_height);
+      release_decode_frame(frame_data.frame_data);
+      continue;
     }
 
     uint8_t *qr_buf = k_quirc_begin(qr_decoder, NULL, NULL);
@@ -919,8 +907,9 @@ static void qr_decoder_cleanup(void) {
   closing = true;
 
   if (qr_decode_task_handle && qr_task_done_sem) {
-    if (xSemaphoreTake(qr_task_done_sem, pdMS_TO_TICKS(500)) != pdTRUE)
-      ESP_LOGW(TAG, "Timeout waiting for QR decode task");
+    // Let the decoder release its local allocations before deleting its
+    // stack; forced deletion mid-decode can strand secrets and heap locks.
+    xSemaphoreTake(qr_task_done_sem, portMAX_DELAY);
     vTaskDeleteWithCaps(qr_decode_task_handle);
     qr_decode_task_handle = NULL;
   }
@@ -1217,6 +1206,7 @@ static bool camera_run(void) {
 }
 
 void qr_scanner_page_create(lv_obj_t *parent, void (*return_cb)(void)) {
+  session_cleanup_register(qr_scanner_page_destroy);
   (void)parent;
 
   return_callback = return_cb;
@@ -1301,6 +1291,7 @@ void qr_scanner_page_hide(void) {
 }
 
 void qr_scanner_page_destroy(void) {
+  session_cleanup_unregister(qr_scanner_page_destroy);
   destruction_in_progress = true;
   closing = true;
   is_fully_initialized = false;
@@ -1334,7 +1325,9 @@ void qr_scanner_page_destroy(void) {
     ESP_LOGW(TAG, "Timeout waiting for frame operations (remaining: %d)",
              remaining_ops);
 
-  app_video_stop();
+  esp_err_t stop_err = app_video_stop();
+  if (stop_err != ESP_OK)
+    ESP_LOGW(TAG, "Camera stop failed: %s", esp_err_to_name(stop_err));
 
   qr_decoder_cleanup();
 

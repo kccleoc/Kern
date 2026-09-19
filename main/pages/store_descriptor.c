@@ -7,7 +7,9 @@
 #include "../core/wallet.h"
 #include "../ui/dialog.h"
 #include "../ui/input_helpers.h"
+#include "../ui/oneshot.h"
 #include "../ui/theme_widgets.h"
+#include "../utils/session_cleanup.h"
 #include "shared/kef_encrypt_page.h"
 
 #include <lvgl.h>
@@ -17,7 +19,7 @@
 
 static lv_obj_t *main_screen = NULL;
 static lv_obj_t *progress_dialog = NULL;
-static lv_timer_t *save_timer = NULL;
+static ui_oneshot_t save_timer;
 static void (*return_callback)(void) = NULL;
 static storage_location_t target_location;
 static bool target_encrypted;
@@ -132,7 +134,6 @@ static void overwrite_confirm_cb(bool confirmed, void *user_data) {
 
 static void deferred_save_encrypted_cb(lv_timer_t *timer) {
   (void)timer;
-  save_timer = NULL;
 
   if (storage_descriptor_exists(target_location, pending_id, true)) {
     if (progress_dialog) {
@@ -161,15 +162,13 @@ static void encrypt_success_cb(const char *id, const uint8_t *envelope,
 
   progress_dialog =
       dialog_show_progress("KEF", "Saving...", DIALOG_STYLE_OVERLAY);
-  save_timer = lv_timer_create(deferred_save_encrypted_cb, 50, NULL);
-  lv_timer_set_repeat_count(save_timer, 1);
+  ui_oneshot_start(&save_timer, deferred_save_encrypted_cb, 50);
 }
 
 /* ---------- Plaintext path — ID input ---------- */
 
 static void deferred_save_plaintext_cb(lv_timer_t *timer) {
   (void)timer;
-  save_timer = NULL;
 
   if (storage_descriptor_exists(target_location, pending_plaintext_id, false)) {
     if (progress_dialog) {
@@ -198,8 +197,7 @@ static void id_input_ready_cb(lv_event_t *e) {
 
   progress_dialog = dialog_show_progress("Saving", "Saving descriptor...",
                                          DIALOG_STYLE_OVERLAY);
-  save_timer = lv_timer_create(deferred_save_plaintext_cb, 50, NULL);
-  lv_timer_set_repeat_count(save_timer, 1);
+  ui_oneshot_start(&save_timer, deferred_save_plaintext_cb, 50);
 }
 
 /* ---------- Page lifecycle ---------- */
@@ -207,6 +205,7 @@ static void id_input_ready_cb(lv_event_t *e) {
 void store_descriptor_page_create_for_descriptor(
     lv_obj_t *parent, void (*return_cb)(void), storage_location_t location,
     bool encrypted, const struct wally_descriptor *descriptor) {
+  session_cleanup_register(store_descriptor_page_destroy);
   if (!parent || !descriptor)
     return;
 
@@ -236,7 +235,7 @@ void store_descriptor_page_create_for_descriptor(
     kef_encrypt_page_create(
         parent, encrypt_return_cb, encrypt_success_cb,
         (const uint8_t *)descriptor_text, strlen(descriptor_text),
-        descriptor_default_id[0] ? descriptor_default_id : NULL);
+        descriptor_default_id[0] ? descriptor_default_id : NULL, false);
   } else {
     /* Show ID text input for plaintext save */
     ui_text_input_create(&id_input, parent, "Descriptor name", false,
@@ -247,6 +246,7 @@ void store_descriptor_page_create_for_descriptor(
 
 void store_descriptor_page_create(lv_obj_t *parent, void (*return_cb)(void),
                                   storage_location_t location, bool encrypted) {
+  session_cleanup_register(store_descriptor_page_destroy);
   const registry_entry_t *entry = registry_get(0);
   store_descriptor_page_create_for_descriptor(
       parent, return_cb, location, encrypted, entry ? entry->desc : NULL);
@@ -263,10 +263,8 @@ void store_descriptor_page_hide(void) {
 }
 
 void store_descriptor_page_destroy(void) {
-  if (save_timer) {
-    lv_timer_del(save_timer);
-    save_timer = NULL;
-  }
+  session_cleanup_unregister(store_descriptor_page_destroy);
+  ui_oneshot_cancel(&save_timer);
   if (progress_dialog) {
     lv_obj_del(progress_dialog);
     progress_dialog = NULL;
