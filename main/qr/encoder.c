@@ -276,19 +276,6 @@ char *mnemonic_qr_to_mnemonic(const char *data, size_t len,
   }
 }
 
-const char *mnemonic_qr_format_name(mnemonic_qr_format_t format) {
-  switch (format) {
-  case MNEMONIC_QR_PLAINTEXT:
-    return "Plaintext";
-  case MNEMONIC_QR_COMPACT:
-    return "Compact SeedQR";
-  case MNEMONIC_QR_SEEDQR:
-    return "SeedQR";
-  default:
-    return "Unknown";
-  }
-}
-
 char *mnemonic_to_seedqr(const char *mnemonic) {
   if (!mnemonic) {
     return NULL;
@@ -365,6 +352,7 @@ char *mnemonic_to_seedqr(const char *mnemonic) {
         break;
       }
     }
+    secure_memzero(word, sizeof(word));
 
     if (!found) {
       free(seedqr);
@@ -390,24 +378,21 @@ unsigned char *mnemonic_to_compact_seedqr(const char *mnemonic,
     return NULL;
   }
 
-  unsigned char entropy[32];
-  size_t entropy_len = 0;
-  if (bip39_mnemonic_to_bytes(NULL, mnemonic, entropy, sizeof(entropy),
-                              &entropy_len) != WALLY_OK) {
-    return NULL;
-  }
-
-  if (entropy_len != COMPACT_SEEDQR_12_WORDS_LEN &&
-      entropy_len != COMPACT_SEEDQR_24_WORDS_LEN) {
-    return NULL;
-  }
-
-  unsigned char *result = kern_secret_alloc(entropy_len);
+  unsigned char *result = kern_secret_alloc(COMPACT_SEEDQR_24_WORDS_LEN);
   if (!result) {
     return NULL;
   }
 
-  memcpy(result, entropy, entropy_len);
+  size_t entropy_len = 0;
+  if (bip39_mnemonic_to_bytes(NULL, mnemonic, result,
+                              COMPACT_SEEDQR_24_WORDS_LEN,
+                              &entropy_len) != WALLY_OK ||
+      (entropy_len != COMPACT_SEEDQR_12_WORDS_LEN &&
+       entropy_len != COMPACT_SEEDQR_24_WORDS_LEN)) {
+    free(result);
+    return NULL;
+  }
+
   *out_len = entropy_len;
   return result;
 }
@@ -468,8 +453,10 @@ lv_obj_t *qr_create_optimal(lv_obj_t *parent, int32_t size, const char *text) {
     return NULL;
 
   lv_qrcode_set_size(qr, size);
-  if (text)
-    qr_update_optimal(qr, text, NULL);
+  if (text && qr_update_optimal(qr, text, NULL) != LV_RESULT_OK) {
+    lv_obj_delete(qr);
+    return NULL;
+  }
   lv_obj_center(qr);
   return qr;
 }
@@ -548,6 +535,10 @@ lv_result_t qr_update_optimal(lv_obj_t *qr_obj, const char *text,
   }
 
   int32_t scale = draw_buf->header.w / modules;
+  if (scale <= 0) {
+    free(qr_buf);
+    return LV_RESULT_INVALID;
+  }
   if (result) {
     result->modules = modules;
     result->scale = scale;
