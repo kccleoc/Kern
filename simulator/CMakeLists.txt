@@ -570,4 +570,16 @@ if(NOT APPLE)
     target_link_options(kern_sim_cleanup PRIVATE -Wl,--wrap=strdup -Wl,--wrap=kern_secret_strdup)
     add_test(NAME sensitive_cleanup COMMAND kern_sim_cleanup)
     set_tests_properties(sensitive_cleanup PROPERTIES TIMEOUT 30)
+
+    add_executable(kern_sim_scan_registry
+        tests/scan_registry.c
+        ../components/secure_memory/secure_memory.c
+        $<TARGET_OBJECTS:kern_sim_runtime>)
+    foreach(prop INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
+        get_target_property(test_${prop} kern_simulator ${prop})
+        set_property(TARGET kern_sim_scan_registry PROPERTY ${prop} "${test_${prop}}")
+    endforeach()
+    target_compile_options(kern_sim_scan_registry PRIVATE -UNDEBUG)
+    add_test(NAME scan_registry COMMAND kern_sim_scan_registry)
+    set_tests_properties(scan_registry PROPERTIES TIMEOUT 30)
 endif()

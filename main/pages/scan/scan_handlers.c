@@ -3,6 +3,7 @@
  */
 
 #include "../../core/key.h"
+#include "../../core/registry.h"
 #include "../../core/wallet.h"
 #include "../../qr/encoder.h"
 #include "../../ui/assets/icons.h"
@@ -95,6 +96,8 @@ static void mnemonic_confirm_cb(bool confirmed, void *user_data) {
     return;
   }
 
+  registry_init(net == WALLET_NETWORK_TESTNET);
+
   SECURE_FREE_STRING(scan_ctx.scanned_mnemonic);
 
   // Return to home — it will recreate with new key info
@@ -133,7 +136,7 @@ void scan_handle_mnemonic(const char *data, size_t len) {
   snprintf(msg, sizeof(msg),
            "Replace current key?\n\n" ICON_FINGERPRINT " %s\n" LV_SYMBOL_DOWN
            "\n#%06X " ICON_FINGERPRINT " %s#\n\n"
-           "Passphrase and descriptors will be discarded.",
+           "Passphrase and unregistered descriptors will be discarded.",
            current_fp, (unsigned)highlight, new_fp);
 
   dialog_show_confirm(msg, mnemonic_confirm_cb, NULL, DIALOG_STYLE_FULLSCREEN);
